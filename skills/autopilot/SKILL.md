@@ -1,0 +1,367 @@
+---
+name: autopilot
+description: Run the board unattended: each open row goes to its model in a worktree, is reviewed, and is reported back. Stops when the board is done or the budget you set is spent.
+disable-model-invocation: true
+---
+
+<!-- personal-config v0.8.0 · 2026-10-16 · config 68e6e026 · standard v2.1.0 -->
+
+# /autopilot
+
+**Run only when the person typed `/autopilot` in this session.** If you loaded this skill on your
+own, stop here and say so.
+
+Runs every runnable row on the board (`PASSOFF.md`) through `/delegate`, several at once,
+with nobody at the keyboard: one round of questions at the start, then builds, reviews and records
+until the board is done or a cap is reached, then a rundown. Every row still gets its model, its
+own worktree and an auditor. Only this session writes the board and the ledger
+(`HANDOFF.md`). Where the repo has a lane file, the person can choose to run `/audit` first:
+its rows join the board, and the run builds the ones it can.
+
+## The defaults
+
+The opening round offers these, each one first and marked recommended. They are written here once,
+and the rest of this skill names them.
+
+| Default | Value |
+|---|---|
+| Weekly usage, where a usage tool exists | Spend at most 25 points of the weekly window |
+| Five-hour window, where a usage tool exists | Freeze launches at 75% of it, and resume after its reset |
+| Agents in flight | 6, of which at most 4 are builders |
+| End time | 8 hours after the start |
+| Rows | No cap |
+| Fix rounds per row | 2, then the row is held |
+| Wake while holding | 3600 seconds |
+| Wake while agents run | 1800 seconds |
+| This session's context | No cap, recorded on every wake |
+| Calls of row questions in the opening round | 3, so at most 12 row questions |
+| Audit trigger: diffstat | More than 300 lines changed, or more than 8 files |
+| Decider questions per row | 3, then the row is held |
+
+## 1. Before anything
+
+1. **Run in the primary checkout.** If `git rev-parse --show-toplevel` is not the first path `git
+   worktree list` prints, stop and say so: the board and the ledger are written there.
+2. **Note which tools this session has**: a timer (`ScheduleWakeup`) and a usage tool (in the
+   desktop app, `get_usage`). Both answers go into the state file, and both change the opening
+   round.
+3. **Load `/delegate` once, with the Skill tool.** Its steps run every row. Do not load it again
+   for each row; load it again only when a compaction has taken it out of your context.
+4. **Look for the lane file**, `docs/audit-lanes.md`. Where it exists, load `/audit` once, with the
+   Skill tool, and read the lane file: the audit call offers its lanes and `/audit`'s defaults.
+   Where it does not exist, ask no audit call, and run the board only.
+
+## 2. Which rows can run
+
+A row is runnable when all of these hold:
+
+- It is `OPEN`, and every row before it in its lane is finished (`DONE`, `SUPERSEDED` or
+  `SETTLED AS NO`), because the items in a lane run in order. A `HELD` or `IN FLIGHT` row ahead of
+  it holds it back.
+- Every item its "Waits on" names is `DONE`, or has left the table at a fold.
+- An item its "Waits on" names on another board, as `<absolute path to the other board> item
+  <n>`, is `DONE` there, or absent from both that board's table and the folder beside it named
+  after the board file, lowercased (`PASSOFF.md` gives `passoff/`; no file there starts with
+  `<n>-`). Read that board by path on every wake. Where the board file cannot be read, the wait
+  is unmet, and the row goes under **Held** with the path. Where the Autonomy call's question 11
+  took the other answer, such a wait is unmet.
+- A row whose predecessor in its lane, or an item its "Waits on" names, was signed off in
+  this run is runnable once that row has landed (`/delegate`'s step 6): it builds from the
+  base, which now holds the predecessor. A predecessor whose landing is held holds it.
+- Its prompt does not say to scope first, or its item file carries a dated note that a run
+  scoped it and its gate was answered (section 5).
+- Its "Files it owns" overlaps no row marked `IN FLIGHT`, and no other row in the same launch.
+  Check the whole launch set at once, as `/delegate`'s step 5 does; of two rows that overlap, the
+  lower row number goes.
+- Its tier maps to a model family, and it sits at or below the repo's tier ceiling, where the
+  router has one. A row above the ceiling is held, and the opening round cannot lift it. So is a
+  load-bearing row whose Deep review the ceiling forbids.
+- It is not Deep, or the person lifted it in the opening round. Only the person lifts a Deep row.
+- Its owner questions are answered.
+
+When the caps allow fewer launches than there are runnable rows, the lowest row number goes first.
+
+## 3. The opening round
+
+At most four questions in each `AskUserQuestion` call. The questions, their options and their
+defaults are fixed below. The words are yours, inside the person's chat-style rule where they
+chose one. Put the default first in each question and mark it recommended.
+
+**Audit call, before the first call, only where the lane file exists. Four questions.** The
+defaults are `/audit`'s.
+
+1. **Audit first?** Yes: run `/audit`'s lanes, then the board; or no, the board only.
+2. **Lanes and order.** The lanes the lane file names, in its order; the person may drop lanes or
+   type another order.
+3. **Scope.** The full repo, or the changes since the last audit report's commit.
+4. **Stop.** Stop launching at `/audit`'s default stop; or a later time the person types. This
+   answer is the run's end time, whatever question 1 says. Write it as an absolute time with its
+   zone, worked out from `date`.
+
+**First call, always. Four questions.**
+
+1. **Budget.** Where a usage tool exists: stop launching at the default end time or at the
+   default share of the weekly window, whichever comes first, and freeze launches at the default
+   share of the five-hour window; or a shorter run; or a number of rows the person types. Where no
+   usage tool exists, say that the budget will not be measured, and require an end time or a
+   number of rows. Where the audit call ran, its stop is the end time: offer no other end time
+   here.
+   Where several runs are open at once, say that they read one window and the caps are joint, and
+   offer a larger weekly share.
+2. **Agents in flight.** The default; fewer; or one at a time.
+3. **Unattended.** Say what the run needs: a permission mode that does not stop on a prompt, and
+   the app or the terminal left open on a machine that stays awake. Where no timer exists, say that
+   the run ends when nothing is in flight, and that it cannot wait out a usage freeze. Say that the
+   run ends with `/clean-up`, which moves finished work to the archive without asking again.
+   Options: ready, or stop here.
+4. **Models.** Each tier's name and the family you will pass for it:
+
+   | Tier | Model |
+   |---|---|
+   | Deep | Fable 5.1 |
+   | Default | Opus 5.5 |
+   | Mechanical | Sonnet 5.5 |
+   | Light | Haiku 5.5 |
+
+   Options: correct, or the person types the mapping. A tier that still maps to no family holds
+   its rows.
+
+**Second call, only when it has something to ask. Up to three questions.**
+
+5. **Deep rows.** Which Deep rows to lift:
+   all of them, including rows written during the run; the rows named; or none, the default.
+6. **Load-bearing rows.** Which other runnable rows get a Deep review. None is the default.
+7. **Rows to leave out** of this run. None is the default.
+
+**Autonomy call, always, after the second call where it is asked. Four questions.** Each default
+is first and marked recommended.
+
+8. **Questions during the run.** Decide a builder's question here, by how loud a wrong answer
+   would be, with the item file's own words binding and every decision logged with its reversal;
+   or hold every row that asks, as the wake procedure's step 4 says without this answer.
+9. **Scope-first rows.** Scope them in the run and answer the gate by each recommendation,
+   holding only a question the item file or the document marks as the owner's call; or leave
+   them out.
+10. **Audits.** By tier: Deep and Default rows audited, Mechanical and Light rows landed on their
+    gates unless a trigger fires; or every row.
+11. **Other boards.** Read every "Waits on" that names another board by path on each wake, and
+    hold instead of ending while such a wait is open; or treat such a wait as unmet.
+
+**Later calls.** Each candidate row's open "Ask before building" questions, as the row wrote them,
+with the row's own options, four in each call, up to the default number of calls. A copy question
+shows its variants, and the person picks. A row whose questions were not reached is held.
+
+After the round, ask nothing more. Write the answers into the state file, dated, word for word.
+
+## 4. The run folder and the state file
+
+Make `docs/incomplete/autopilot-<YYYY-MM-DD>/`. Where a folder for that date exists, add `-2`, or
+the next free number. `STATE.md` in it has these sections:
+
+- **Run**: the start time, the folder, a sentinel phrase for `personal-config context`, and the
+  timer and usage tool found.
+- **Caps**: each cap, as answered.
+- **Audit**: "not run", or the audit folder, and one line for each lane: the step, the agent ids,
+  and whether the step is done or in progress.
+- **Standing orders**: the lifted rows, the load-bearing rows, the rows left out, and the answers
+  to the row questions.
+- **Rows**: one line for each row: number, tier, status, agent ids, worktree path, branch, patch
+  path, relay passes, review rounds, verdict.
+  A row a run scoped (section 5) adds "scoped: <path>" to its line.
+- **Waits elsewhere**: one line for each row whose "Waits on" names another board: the row,
+  the board's path, the item, and whether the wait was met on the last wake.
+- **Queue**: the runnable rows not yet launched, in launch order.
+- **Readings**: one line for each wake: the time, the usage reading or "not measured", and this
+  session's context.
+- **Reports**: for each row, one entry for each report, the builder's and every auditor's, headed
+  with the row, the agent and the absolute time the report arrived. Each holds what the rundown needs:
+  the gates seen and their result, any number claimed, the files changed and the untracked files
+  added, the commit state, the close-out text where the item's file is untracked, questions and
+  build-level calls, what was not verified, warnings, and the hand-back blocks. Write it when the report arrives: after a compaction the report is gone,
+  and this section is all the rundown has.
+- **Judgment calls**: each with its reversal.
+- **Held**: each held row, and what it waits on.
+
+Write every time as an absolute time with its zone, such as `2026-10-03 01:20 EDT`, read from
+`date`. Never write a relative date word or an estimate, because `doctor` scans this folder.
+
+## 5. Launch
+
+Where the person chose audit first, launch no row yet: start `/audit`'s first lane (its section
+4) instead. The rows launch only after `/audit` has written its rows (its section 5), from a fresh
+read of the board.
+
+Otherwise, claim each runnable row, then run `/delegate`'s step 2 for each, up to the
+agents-in-flight cap, with the Agent calls in one message.
+
+Where the Autonomy call's question 9 took the default, a row whose prompt says to scope first is
+runnable for scoping when every other condition in section 2 holds, and its launch is a scoping
+run. Spawn a Default subagent in its own worktree with `/scope`'s text (its absolute path,
+read-only) and the row's prompt; it writes `docs/incomplete/<slug>/SCOPE.md` with every option
+carrying a recommendation, writes **owner's call** before a question only the owner can answer,
+as `/passoff` says, commits it naming the file, and asks no gate. Send the document's open
+questions and its path to a Deep decider under the wake procedure's step 4; it answers each by
+its recommendation unless the document or the code gives a reason not to, and holds on a
+question the item file or the document marks as the owner's. The scoper writes the answers
+under a dated **Answers** section, each as "decided by <model> in `<run folder>`, <date>,
+reversal: ...", commits, and you land the branch by `/delegate`'s step 6 with no audit: the Deep
+gate is its review. Add a dated note to the row's item file naming the document and the gate's
+outcome; the row then counts as scoped, and a later wake may launch its build with the document
+as its design input. A held gate holds the row with the document landed, so the owner's
+morning starts at the gate.
+
+Write `STATE.md`. Then start `/loop` with no interval and this prompt: "Read `<the run
+folder>/STATE.md` first. If `/autopilot`, `/delegate` or, while the audit runs, `/audit` is no
+longer in your context, load it again with the Skill tool. Then follow `/autopilot`'s wake
+procedure."
+
+## 6. The wake procedure
+
+On every wake, and whenever a background agent returns:
+
+1. **Read `STATE.md` first.** It is the record of the run, not your memory of it. After an
+   automatic compaction, it is all you have.
+2. **Record a reading**: the time from `date`, the usage figure or "not measured", and this session's context
+   from `personal-config context --sentinel "<the sentinel>"`.
+3. **Handle each returned row agent (a builder, a relayed pass or an auditor), one at a time, in
+   this order.** First, read the time from `date`. Then bring its row's line under **Rows** up to date: the status, the worktree path, the
+   branch, the patch path, the relay passes, the review rounds and the verdict, so no field still
+   reads `pending` once the report answers it. Then write its **Reports** entry with that time,
+   the hand-back blocks among it, not into the chat. Only then route it by `/delegate`'s steps: a
+   builder's report to an auditor, a relay to a fresh builder, a verdict to sign-off, a fix round
+   or a hold. Record each sign-off as `/delegate`'s step 4 says: the item's close-out, a log line
+   and the board. Route each returned audit agent by `/audit`'s
+   sections 4 to 6, and record its step under **Audit**; its next step launches in step 6, never
+   here. When `/audit` has written its rows, read the board again before step 6.
+   Under this policy the record follows the landing: route a signed-off row to
+   `/delegate`'s step 6, and write the log line and `DONE` when its fast-forward lands.
+4. **A question a builder reports for the owner** is answered here, never by asking. Where the
+   Autonomy call's question 8 took the default, decide it. The item file's words come first: a
+   question it marks as the owner's holds the row, and so does an answer that would widen "Files
+   it owns" into a file another open row lists. The marks are the phrase "owner's call", a name
+   followed by "'s call", "do not pick before", and an "Ask before building" entry the opening
+   round did not reach. Then decide by what a wrong answer does, going up a class when unsure:
+   - *Caught at once* (a gate or the eye shows it: a copy variant, a casing, a default value, a
+     file to add that no other open row lists): this session decides. Where it adds a file to the
+     row, it also writes that file into the row's "Files it owns".
+   - *Looks right until tested* (a choice between designs, a flow, a shared primitive): a
+     Default subagent decides.
+   - *Compiles and passes every gate, wrong in production* (money, sync or merge rules, a
+     notification, data removed, a migration, a public contract, a file two rows touch): a Deep
+     subagent decides. Where the tier ceiling forbids a Deep decider, the row is held.
+
+   A decider runs in its own worktree, reads the item file, the question and the code it names,
+   and returns the decision, a one-line reversal, and whether the row is now load-bearing, which
+   is an audit trigger. Any decider that finds the question is the owner's returns that instead,
+   and the row is held. Send the answer to the builder with `SendMessage`, and log it under
+   **Judgment calls** with the reversal and the decider's model. The fourth question on one row
+   holds it. Under question 8's other answer, this session decides nothing: where it only
+   implements a decision the row or the design already made, take it, and log it under
+   **Judgment calls** with a one-line reversal. Anything else holds the row, with the question
+   under **Held**, even when the builder finished.
+5. **Where the five-hour window has reached its default share**, freeze launches and hold on the
+   holding wake. After its reset, resume the stopped agents with `SendMessage`.
+6. **Launch.** Unless a cap is reached or launches are frozen, read the board fresh and launch the
+   next runnable rows, up to the agents-in-flight cap. Check the end time against `date` and the
+   caps against this wake's reading here, before any launch: the last check may be a wake old.
+   While the audit runs, launch its next step instead, and no row.
+7. **Check the stop rules** (section 7). If the run ends, go to section 8.
+8. **Schedule the next wake** with `ScheduleWakeup`: the wake while agents run, or the wake while
+   holding.
+9. **Write `STATE.md`** before the turn ends.
+
+## 7. Stop rules
+
+- Read the time from `date` for every check against the end time. Never estimate it.
+- The first cap reached (usage where a usage tool exists, the end time, or the number of rows)
+  stops new launches.
+- After a cap, in-flight work finishes and its reviews run. A blocking verdict then holds the row:
+  no new fix round starts. When nothing is in flight after a cap, the run ends, whatever rows are
+  still runnable.
+- When nothing is in flight after this wake's launches, the run ends: no row was runnable, or
+  none could launch. The one exception is a hold with a timer: a freeze, or agents a limit
+  stopped, which wait on the holding wake.
+- Where the Autonomy call's question 11 took the default, a run with nothing in flight and at
+  least one open wait on another board, on a row that would otherwise be runnable, holds on the
+  holding wake instead of ending, until the end time.
+- Where no usage tool exists and a limit stops the agents, hold on the holding wake, then resume
+  them with `SendMessage`. Where no timer exists either, end the run there: nothing will wake this
+  session. The stopped agents' rows go under **Held**. A stopped audit step is written in the
+  report as not finished, and `/audit`'s section 5 runs before the run ends.
+- **While the audit runs**, check the caps before each step of a lane starts, as `/audit`'s
+  section 6 says. A cap reached there launches no row: the audit's started steps
+  finish, `/audit` writes its report and its rows, and the run ends when nothing is in flight.
+  The freeze, and the hold and resume above, apply to audit agents as they do to builders.
+- **A run that crosses the weekly window's reset** counts its spend across it. A weekly reading
+  lower than the one before marks the reset. The spend is then the last reading before the reset
+  minus the start reading, plus the latest reading after the reset. Never count a drop as negative
+  spend.
+- **This session's own context never stops the run**, unless the person set a cap for it. Record
+  it on every wake. The working standard's context ceilings were measured on sessions that read
+  files: the Default ceiling is about 400k, measured 2026-08-16. On 2026-10-03 an orchestrator
+  that read only short reports ran to 767,008 tokens on a 1M window with no automatic compaction.
+  This skill follows that evidence, and the standard does not yet say so. Keep your own reads
+  short: read reports and the state file, not source.
+
+A held row's "Waits on" names the file its reason is written in: the run's `RUNDOWN.md`, or the
+file that holds the row's open findings.
+
+## 8. The end
+
+1. End the timer: `ScheduleWakeup` with `stop: true`, or no new wake.
+2. **Run `/clean-up`**, with the Skill tool, as the run's last step before the rundown. The
+   person's "ready" in the opening round is the yes its previews wait for: post each preview in
+   chat and go on. On a board with a `passoff/` folder, its fold moves each `DONE` item's
+   file and its row to the archive, and a `DONE` row with no file gets an archive file that holds
+   the row. On a 1.x board, with no `passoff/` folder, the fold moves `DONE` prompts and old
+   step bodies, and every row stays. A move its own rules hold, such as one that waits for a
+   commit, is not run: it goes under **Decisions waiting for the owner**. What moved goes in the
+   rundown's first paragraph, and its commit is step 4's.
+3. Write `RUNDOWN.md` in the run folder from `STATE.md`, with these sections in this order. Each is present, and
+   says "none" where it is empty.
+   1. **In one paragraph**: what ran, what is done, what is held, and why the run ended.
+   2. **Audit**: "not run", or the report's path, each lane's last step, the findings verified,
+      the findings dropped as duplicates, the rows written, and the lanes not run.
+   3. **Rows**: for each row, the model, the worktree path and branch, the gates seen, the review
+      verdicts, the fix rounds and the status.
+   4. **Defects found and not fixed.**
+   5. **Collisions and merge order**, including any number two rows both claimed.
+   6. **Judgment calls**, each with its reversal.
+   7. **Decisions taken for the owner**, each with its reversal and its decider, followed by the
+      decisions still waiting, under **Decisions waiting for the owner**, copy variants among
+      them.
+   8. **Budget**: the usage readings or "not measured", agents by model, hours, and this session's
+      peak context.
+   9. **Not verified**: what no one saw running.
+   10. **Warnings**, such as a tool that deletes uncommitted worktrees.
+   11. **Landed**: for each row, its branch, the merge commit or fast-forward, and
+      whether the push went; the rows landed and not pushed, with how far ahead the base is;
+      and the exact files step 4 commits.
+4. Add one line at the end of the log in `HANDOFF.md` for the run:
+   `- <date> · autopilot run · <the run folder>/RUNDOWN.md`. A run is not an item, so it gets no
+   item file and no row. On a 1.x board, with no `passoff/` folder, write the run's own
+   ledger step instead, at the next free number, read from the file now, pointing at the rundown.
+   Then commit the run from the primary checkout, with `git -C`: `git add <the run folder's
+   STATE.md and RUNDOWN.md, and each tracked file the fold moved, removed or changed that is
+   still uncommitted>`, then
+   `git commit <the same files> -m "autopilot run <date>"`, then `git push`. Untracked records
+   stay as they are. Where the archive is its own repository, commit there too, naming its
+   files, and push where it has a remote.
+5. Where a push notification tool exists, send one line that names the rundown's path.
+6. Post the rundown's first paragraph and its path in chat.
+
+## 9. Standing orders
+
+These hold for this session, and each builder's brief carries them after `/delegate`'s rules,
+because a builder never sees this skill.
+
+- This session uses `git -C <path>` and absolute paths. Never `cd`: it moves this session's
+  working directory. An agent in a worktree does the opposite: it runs git as plain commands from
+  its own worktree's directory, and never `git -C` on another worktree, which isolation refuses.
+- A builder that needs an ignored file it cannot copy, such as an env file, stops and reports.
+  Never retry a call that was denied.
+- Do not start, stop or restart services outside this repo.
+- Builders take no ledger number and write no log line. Every other number a row claims, such as a migration, is
+  reported, and two rows that claim one number go under Collisions in the rundown.
+- A builder that must touch a file its row does not list in "Files it owns" stops and reports.
+  Its own item file, where `/delegate` lets it write the close-out, is the one exception.
