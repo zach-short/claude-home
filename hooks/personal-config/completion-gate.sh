@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# personal-config v0.8.0 · 2026-10-16 · config 68e6e026 · standard v2.1.0
+# personal-config v0.8.0 · 2026-10-17 · config 4c6d7946 · standard v2.1.0
 # Stop hook: refuses to end a turn on work that is visibly unfinished.
 #
 # Two checks, cheapest first. It scans the source files this working tree has changed for the
@@ -48,12 +48,13 @@ if [ "$active" = yes ]; then exit 0; fi
 
 # Blocking is one function so every reason has the same shape: what failed, the evidence, and
 # what to do about it — including the fact that saying so and stopping again is allowed, since a
-# scan of text cannot tell an unfinished edit from a sentence that reads like one.
+# scan of text cannot tell an unfinished edit from a sentence that reads like one. A third
+# argument replaces that last line where a false alarm is not the answer.
 block() {
   printf 'Blocked: %s\n\n%s\n\n%s\n' \
     "$1" \
     "$2" \
-    "Fix it, or say why this is a false alarm and stop again — this gate is overridden after 8 consecutive blocks." >&2
+    "${3:-Fix it, or say why this is a false alarm and stop again — this gate is overridden after 8 consecutive blocks.}" >&2
   exit 2
 }
 
@@ -131,32 +132,217 @@ while IFS= read -r file; do
   fi
 done <<<"$(candidates)"
 
+# Where `.personal-config.json` is. It is untracked, so a linked worktree has none, and reading
+# `./.personal-config.json` there found nothing and ran nothing, silently. The same path in the
+# main checkout is the answer, found the way `documentRoot` in `src/lib/git.ts` finds it: the
+# common git dir names the main checkout, and git, asked from there, has to agree before it is
+# used. Anything that does not round-trip — a bare main, a moved checkout, a git older than
+# `--path-format` (2.31) — keeps the current folder, where the file is missing and the log says so.
+# A submodule or a nested repository has its git dir as its common dir and is never mapped.
+#
+# Two more guards, each from a case that resolved to another folder in review. The function runs
+# in a `$(...)` subshell, so the `unset` drops git's location overrides for these questions only:
+# a `GIT_COMMON_DIR` in the environment named its own repository from any folder. And a git dir
+# made by `--separate-git-dir=<x>/.git` round-trips to `<x>`, which holds no checkout, so the
+# candidate must hold the files its index tracks: from `<x>` every one of them reads as deleted.
+#
+# The folder is the nearest one holding the file, climbing from where the stop happened. Until
+# 2026-10-18 the answer was that one folder: a stop in `docs/bench` looked for
+# `<main>/docs/bench/.personal-config.json`, found nothing and skipped the gate, 83 times in one
+# repo's log. In a linked worktree the climb is through the main checkout's tree, since the file
+# is untracked and exists only there. The climb stops at the git top level, so a submodule or a
+# nested repository never reaches the config of the repository around it, and a folder that is in
+# no repository, or whose git cannot be trusted, is not climbed at all.
+#
+# It prints two lines: the folder to read the config from, and the folder to run the gate in.
+# They differ only in a linked worktree, where the config comes from the main checkout and the
+# gate runs in the same folder of this worktree, so a root gate (`go test ./...`, a script path
+# relative to the root) proves the root wherever the stop happened (gate-contract review,
+# 2026-10-18: run from `docs`, `go vet ./...` matched no packages and blocked a green tree).
+config_dir() {
+  local git_dir common main prefix indexed missing top start found run
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
+  git_dir="$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)" || { twice "$(pwd)"; return; }
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || { twice "$(pwd)"; return; }
+  case "$git_dir" in /*) ;; *) twice "$(pwd)"; return ;; esac
+  case "$common" in /*) ;; *) twice "$(pwd)"; return ;; esac
+  # Every answer below that is not the main checkout climbs this checkout's own tree, so a stop
+  # that cannot be mapped still finds a config above it in the same checkout, and nothing beyond.
+  # The gate runs where that config is, which is inside this checkout.
+  top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ "$git_dir" = "$common" ]; then twice "$(climb "$top" "$(pwd -P)" "$(pwd)")"; return; fi
+
+  case "$common" in
+    */.git) main="${common%/.git}" ;;
+    *)
+      main="$(git config --file "$common/config" core.worktree 2>/dev/null || true)"
+      [ -n "$main" ] && main="$(cd "$common" && cd "$main" 2>/dev/null && pwd -P || true)"
+      ;;
+  esac
+  if [ -z "$main" ] ||
+    [ "$(git -C "$main" rev-parse --path-format=absolute --git-dir 2>/dev/null)" != "$common" ] ||
+    [ "$(git -C "$main" rev-parse --show-toplevel 2>/dev/null)" != "$main" ]; then
+    twice "$(climb "$top" "$(pwd -P)" "$(pwd)")"
+    return
+  fi
+  indexed="$(git -C "$main" ls-files 2>/dev/null | wc -l)"
+  missing="$(git -C "$main" ls-files --deleted 2>/dev/null | wc -l)"
+  if [ "$indexed" -gt 0 ] && [ "$missing" -ge "$indexed" ]; then
+    twice "$(climb "$top" "$(pwd -P)" "$(pwd)")"
+    return
+  fi
+  prefix="$(git rev-parse --show-prefix 2>/dev/null || true)"
+  start="$main${prefix:+/${prefix%/}}"
+  found="$(climb "$main" "$start" "$start")"
+  # The config's folder, moved from the main checkout into this worktree. A folder this worktree
+  # does not have (deleted or renamed on its branch) falls back to the worktree's top level, and
+  # a top level git did not print as an absolute path falls back to where the stop happened.
+  case "$top" in
+    /?*)
+      run="$top${found#"$main"}"
+      [ -d "$run" ] || run="$top"
+      ;;
+    *) run="$(pwd)" ;;
+  esac
+  printf '%s\n%s\n' "$found" "$run"
+}
+
+# `twice <folder>` answers the same folder for the config and the run: every case but a mapped
+# linked worktree.
+twice() {
+  printf '%s\n%s\n' "$1" "$1"
+}
+
+# `climb <top> <start> <none>` prints the nearest folder from `<start>` up to `<top>` that holds
+# `.personal-config.json`, and `<none>` when none does, so the log's `looked=` names the folder
+# the stop happened in, as it did before the climb. A `<start>` that is not inside `<top>` (an
+# empty top, a relative one, a path git spelled differently) is not climbed: `<none>` is checked
+# alone, the open direction. `<start>` is physical (`pwd -P`) because git prints the top level
+# with its symlinks resolved, and macOS's temporary folders sit behind one.
+climb() {
+  local top="$1" dir="$2"
+  case "$top" in /?*) ;; *) printf '%s\n' "$3"; return ;; esac
+  case "$dir" in "$top" | "$top"/*) ;; *) printf '%s\n' "$3"; return ;; esac
+  while [ -n "$dir" ]; do
+    if [ -f "$dir/.personal-config.json" ]; then printf '%s\n' "$dir"; return; fi
+    [ "$dir" != "$top" ] || break
+    dir="${dir%/*}"
+  done
+  printf '%s\n' "$3"
+}
+
+# One line per stop that reaches the gate, appended where `personal-config` keeps its own state,
+# so "did the gate run in that worktree, and what did it run" has an answer after the fact. A
+# Stop hook's output on a pass is shown to nobody, so the file is the record. Kept to its last
+# 500 lines; a log that cannot be written is skipped, never a reason to block.
+LOG="${HOME:-}/.config/personal-config/completion-gate.log"
+log() {
+  [ -n "${HOME:-}" ] || return 0
+  {
+    mkdir -p "$(dirname "$LOG")" &&
+      printf '%s cwd=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD" "$1" >>"$LOG" &&
+      if [ "$(wc -l <"$LOG")" -gt 1000 ]; then
+        tail -n 500 "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+      fi
+  } 2>/dev/null || true
+}
+
 # The gate command comes from the repo, never from a constant — the same rule `session-banner.sh`
 # follows, and for the same reason: one hook has to serve every repo, and `bun test` is one
-# repo's answer. Read with `sed` rather than `jq` so a missing `jq` costs nothing here; a command
-# containing an escaped quote is beyond that and would be read short, which is why the long form
-# says to keep it to a single plain command.
-config=".personal-config.json"
-gate=""
+# repo's answer. Read with `sed` rather than `jq` so a missing `jq` costs nothing here.
+# Two lines, read without `read` so a `set -e` exit inside the subshell cannot end the hook: the
+# config's folder, then the gate's. A missing second line or folder leaves the gate in `$PWD`.
+dirs="$(config_dir)"
+config="${dirs%%$'\n'*}/.personal-config.json"
+run_dir="${dirs#*$'\n'}"
+[ -d "$run_dir" ] || run_dir="$PWD"
+raw=""
 if [ -f "$config" ]; then
-  gate="$(sed -n 's/.*"gateCommand"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$config")"
+  raw="$(sed -n 's/.*"gateCommand"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$config")"
 fi
+# The first match only. Not `| head -1`: under `pipefail` a second match makes sed write after
+# head has gone, the pipeline exits 141, and `set -e` ends the hook unblocked.
+raw="${raw%%$'\n'*}"
+
+# The value ends at its first quote. One with a backslash before that — an escaped quote above
+# all — is beyond a `sed` read: until 2026-10-16 `"bun test -t \"x\""` was read as
+# `bun test -t \`, which ran something else and could pass. So it is refused by name, and
+# refusing is the closed direction: the turn does not end on a gate command nobody ran.
+gate="${raw%%\"*}"
+case "$gate" in
+  *\\*)
+    log "config=$config gate=unreadable"
+    block "this repo's gate command could not be read." "  $config holds a gateCommand with a backslash or a quote in it, which this hook reads with sed and cannot unescape.
+
+Make it one plain command with no quotes, or put the command in a script and name the script."
+    ;;
+esac
 
 # No gate command configured is not a failure, and must never be treated as one. A repo that has
 # not recorded a command has nothing to prove here — that covers every folder target, every
 # non-code track, and every repo set up before this key existed. The alternative, blocking until
 # somebody configures one, is a hook that refuses eight times in a row on the first run in a repo
 # it was never told about; nobody keeps that installed long enough to benefit from it.
-if [ -z "$gate" ]; then exit 0; fi
+if [ -z "$gate" ]; then
+  if [ -f "$config" ]; then log "config=$config gate=none"; else log "config=none looked=$config"; fi
+  exit 0
+fi
+
+# Under the 600-second timeout `settings.json` gives this hook, because a hook the harness kills
+# does not block: the turn just ends, which is the open direction. So the hook stops the gate at
+# 570 seconds after it started, and running out is a block that says so.
+# `PERSONAL_CONFIG_GATE_TIMEOUT` (seconds) moves it. It was 100 until 2026-10-17, when one repo's
+# whole suite took 69 to 131 seconds on a green tree, and 537 seconds at a load average of 37 on a
+# 10-core machine: every stop there timed out, and after 8 blocks the harness overrides the hook,
+# which then checks nothing. A limit a real gate cannot meet is a gate that is switched off.
+LIMIT="${PERSONAL_CONFIG_GATE_TIMEOUT:-570}"
+# A limit of 0 would block every stop before the gate could finish, so it is read as unset.
+case "$LIMIT" in "" | *[!0-9]*) LIMIT=570 ;; esac
+[ "$LIMIT" -gt 0 ] || LIMIT=570
 
 # `eval`, because the value is a command line — `bun test`, `make check`, `npm run verify` — and
 # it comes from a file in the person's own repo, at the same trust level as the command they
-# would have typed. Output is captured so a failure can quote it; a pass prints nothing, because
-# a Stop hook's stdout is noise on every successful turn.
-if ! output="$(eval "$gate" 2>&1)"; then
+# would have typed. It runs in the folder the config came from, inside the checkout being stopped
+# in, which in a worktree is the worktree: the config comes from the main checkout, the work being
+# proven does not. A gate is written for the folder that holds it (`go test ./...`,
+# `python3 tools/build.py`), so the folder the stop happened in is not where it runs. Output is
+# captured so a failure can quote it; a pass prints nothing, because a Stop hook's stdout is
+# noise on every successful turn. `set -m` gives the gate its own process group, so a timeout
+# stops the whole tree it started and not only the shell around it.
+output_file="$(mktemp "${TMPDIR:-/tmp}/completion-gate.XXXXXX")"
+trap 'rm -f "$output_file"' EXIT
+set -m
+(cd "$run_dir" && eval "$gate") </dev/null >"$output_file" 2>&1 &
+pid=$!
+set +m
+# The limit is read from the clock, never counted in sleeps. Each `sleep 0.2` is a process of its
+# own, and under load it takes longer: counted ticks let a 300-second limit run 318 seconds on
+# 2026-10-17, and a count that drifts with the load can drift past the harness's timeout. `SECONDS`
+# is bash's count of whole seconds since this script started, so the scan and the config lookup
+# above are inside the limit too, and the margin under the harness is the same at any load.
+#
+# A gate that ran out has not passed, and its block says so in place of the usual last line. With
+# "say why this is a false alarm", a slow machine read as one: the next stop arrives with
+# `stop_hook_active` set and goes through, so a red tree under load ended the turn as quietly as a
+# green one (board row 129). Asking for the run keeps the verdict in the turn at any limit.
+while kill -0 "$pid" 2>/dev/null; do
+  if [ "$SECONDS" -ge "$LIMIT" ]; then
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    log "config=$config gate=$gate result=timeout after ${LIMIT}s ran=$run_dir"
+    block "this repo's gate command did not finish in ${LIMIT} seconds, so it has not passed." "  \$ $gate
+
+$(tail -20 "$output_file")" "Run it yourself, in the background if it is slow, and stop again once it passes. A slow machine is not a false alarm: the gate stopped before it could fail."
+  fi
+  sleep 0.2
+done
+if wait "$pid"; then status=0; else status=$?; fi
+
+if [ "$status" -ne 0 ]; then
+  log "config=$config gate=$gate result=fail exit=$status ran=$run_dir"
   block "this repo's gate command did not pass." "  \$ $gate
 
-$(printf '%s' "$output" | tail -20)"
+$(tail -20 "$output_file")"
 fi
 
+log "config=$config gate=$gate result=pass ran=$run_dir"
 exit 0
