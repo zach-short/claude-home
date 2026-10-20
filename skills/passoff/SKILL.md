@@ -3,7 +3,7 @@ name: passoff
 description: Write the next session's first message as a standalone pass-off prompt. Use when handing work to a fresh session or a different model, when adding an item to the board, or when the user says "write the handoff", "pass this off", or "next session".
 ---
 
-<!-- personal-config v0.8.0 · 2026-10-16 · config 68e6e026 · standard v2.1.0 -->
+<!-- personal-config v0.8.0 · 2026-10-17 · config 4c6d7946 · standard v2.1.0 -->
 
 # /passoff
 

@@ -3,7 +3,7 @@ name: scope
 description: Open a piece of work the right way — ground truth first, then a scope document that makes the owner's decisions cheap. Use when the user says "let's build X", "I want to add X", or asks to plan a feature, before any code is written.
 ---
 
-<!-- personal-config v0.8.0 · 2026-10-16 · config 68e6e026 · standard v2.1.0 -->
+<!-- personal-config v0.8.0 · 2026-10-17 · config 4c6d7946 · standard v2.1.0 -->
 
 # /scope
 

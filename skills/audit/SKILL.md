@@ -3,7 +3,7 @@ name: audit
 description: Audit the repo in the lanes its lane file names, verify each finding, write a dated report and board rows. Use only when the person types /audit, or when /autopilot loads it after the person chose audit first.
 ---
 
-<!-- personal-config v0.8.0 · 2026-10-16 · config 68e6e026 · standard v2.1.0 -->
+<!-- personal-config v0.8.0 · 2026-10-17 · config 4c6d7946 · standard v2.1.0 -->
 
 # /audit
 

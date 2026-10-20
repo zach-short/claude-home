@@ -3,7 +3,7 @@ name: delegate
 description: Build one ratified board row or planned phase with a builder subagent and a separate auditor, each in its own worktree on the right model, then sign it off. Use when a row has cleared its gate and you want it built, reviewed and recorded without opening a new session.
 ---
 
-<!-- personal-config v0.8.0 · 2026-10-16 · config 68e6e026 · standard v2.1.0 -->
+<!-- personal-config v0.8.0 · 2026-10-17 · config 4c6d7946 · standard v2.1.0 -->
 
 # /delegate
 

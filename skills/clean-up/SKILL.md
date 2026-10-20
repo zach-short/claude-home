@@ -3,7 +3,7 @@ name: clean-up
 description: Sweep finished work out of the live documents and into the archive (closed item files and their rows, old log lines, finished design folders), then repair everything that pointed at it. Use when doctor reports `unfolded`, after several items have closed, or when the user says "clean up", "tidy the board", "archive what is done", or "fold the handoff".
 ---
 
-<!-- personal-config v0.8.0 · 2026-10-16 · config 68e6e026 · standard v2.1.0 -->
+<!-- personal-config v0.8.0 · 2026-10-17 · config 4c6d7946 · standard v2.1.0 -->
 
 # /clean-up
 
