@@ -1,4 +1,4 @@
-<!-- personal-config v0.8.0 · 2026-10-16 · config 68e6e026 · standard v2.1.0 -->
+<!-- personal-config v0.8.0 · 2026-10-17 · config 4c6d7946 · standard v2.1.0 -->
 # Commits
 
 Claude may run any git command, including `git add`, `git commit`, `git merge` and `git push`.
